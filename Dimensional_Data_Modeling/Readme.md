@@ -112,11 +112,11 @@ The cumulative query populates the actors table by merging data year by year. It
 WITH previous_year AS (
     SELECT *
     FROM actors
-    WHERE current_year = 2022
+    WHERE current_year = 2005
 ), this_year AS (
     SELECT actorid, actor, year, film, votes, rating, filmid
     FROM actor_films
-    WHERE year = 2023
+    WHERE year = 2006
 ), film_and_rating AS (
     SELECT
         actorid,
@@ -154,7 +154,178 @@ SELECT
 FROM film_and_rating t
 FULL OUTER JOIN previous_year p
     ON t.actorid = p.actorid;
-
-select * from actors
-where current_year<2023;
 ```
+![image](https://github.com/user-attachments/assets/502b4b49-021b-44e9-a28c-da40a7cd2fae)
+
+
+
+
+### 3. Slowly Changing Dimensions (SCD)
+
+The actors_history_scd table tracks changes to quality_class and is_active status over time using start and end year for each record.
+
+```
+CREATE TABLE actors_history_scd (
+    actor_id TEXT NOT NULL,
+    is_active BOOLEAN NOT NULL,
+    quality_class quality_class NOT NULL,
+    start_year INTEGER NOT NULL,
+    end_year INTEGER NOT NULL,
+    current_year INTEGER NOT NULL,
+    PRIMARY KEY (actor_id, start_year)
+);
+```
+
+### 4.  Efficient Data Backfill
+The backfill query populates the entire actors_history_scd table in a single execution.
+
+```
+WITH previous_data AS (
+    SELECT
+        actorid,
+        current_year,
+        quality_class,
+        is_active,
+        LAG(quality_class, 1) OVER (PARTITION BY actorid ORDER BY current_year) AS previous_quality_class,
+        LAG(is_active, 1) OVER (PARTITION BY actorid ORDER BY current_year) AS previous_is_active
+    FROM actors
+    WHERE current_year <= 2005
+), with_indicators AS (
+    SELECT *,
+        CASE
+            WHEN previous_quality_class <> quality_class THEN 1
+            WHEN previous_is_active <> is_active THEN 1
+            ELSE 0
+        END AS change_indicator
+    FROM previous_data
+), with_streaks AS (
+    SELECT *,
+        SUM(change_indicator) OVER (PARTITION BY actorid ORDER BY current_year) AS streak_identifier
+    FROM with_indicators
+)
+INSERT INTO actors_history_scd
+SELECT
+    actorid,
+    is_active,
+    quality_class,
+    MIN(current_year) AS start_year,
+    MAX(current_year) AS end_year,
+    2005 AS current_season
+FROM with_streaks
+GROUP BY actorid, streak_identifier, is_active, quality_class
+ORDER BY actorid;
+```
+
+![image](https://github.com/user-attachments/assets/4f07a913-dbe6-4554-bd92-d42fc34d8b8c)
+
+
+
+
+
+### 5. Incremental Updates
+The incremental query merges new data with the previous year’s SCD data, ensuring historical records remain intact.
+
+```
+CREATE TYPE actor_history_scd AS (
+    quality_class quality_class,
+    is_active BOOLEAN,
+    start_year INTEGER,
+    end_year INTEGER
+);
+```
+
+```
+CREATE TYPE actor_history_scd AS (
+    quality_class quality_class,
+    is_active BOOLEAN,
+    start_date INTEGER,
+    end_date INTEGER
+);
+
+WITH last_year_scd AS (
+    SELECT *
+    FROM actors_history_scd
+    WHERE current_year = 2005
+    AND end_year = 2005
+), historical_scd AS (
+    SELECT actorid, quality_class, is_active, start_year, end_year
+    FROM actors_history_scd
+    WHERE current_year = 2005
+    AND end_year < 2005
+), this_year_scd AS (
+    SELECT *
+    FROM actors
+    WHERE current_year = 2006
+), unchanged_records AS (
+    SELECT
+        ts.actorid,
+        ts.quality_class,
+        ts.is_active,
+        ls.start_year,
+        ts.current_year AS end_date
+    FROM this_year_scd ts
+    JOIN last_year_scd ls
+        ON ts.actorid = ls.actorid
+    WHERE ts.quality_class = ls.quality_class
+      AND ts.is_active = ls.is_active
+), changed_records AS (
+    SELECT
+        ts.actorid,
+        UNNEST(ARRAY [
+            ROW(ls.quality_class, ls.is_active, ls.start_year, ls.end_year)::actor_history_scd,
+            ROW(ts.quality_class, ts.is_active, ts.current_year, ts.current_year)::actor_history_scd
+        ]) AS records
+    FROM this_year_scd ts
+    JOIN last_year_scd ls
+        ON ts.actorid = ls.actorid
+    WHERE ts.quality_class <> ls.quality_class
+       OR ts.is_active <> ls.is_active
+), unnested_changed_records AS (
+    SELECT
+        actorid,
+        (records::actor_history_scd).quality_class,
+        (records::actor_history_scd).is_active,
+        (records::actor_history_scd).start_year,
+        (records::actor_history_scd).end_year
+    FROM changed_records
+), new_records AS (
+    SELECT
+        ts.actorid,
+        ts.quality_class,
+        ts.is_active,
+        ts.current_year AS start_date,
+        ts.current_year AS end_date
+    FROM this_year_scd ts
+    LEFT JOIN last_year_scd ls
+        ON ts.actorid = ls.actorid
+    WHERE ls.actorid IS NULL
+)
+SELECT *
+FROM historical_scd
+UNION ALL
+SELECT * FROM unchanged_records
+UNION ALL
+SELECT * FROM unnested_changed_records
+UNION ALL
+SELECT * FROM new_records
+ORDER BY end_year DESC;
+
+```
+**New Records**
+![image](https://github.com/user-attachments/assets/953888ec-ffa1-4e92-875d-b17e57029770)
+
+**Historical Records**
+![image](https://github.com/user-attachments/assets/40865951-95f2-42b8-be22-0a8084119224)
+
+**Unchanged Records**
+![image](https://github.com/user-attachments/assets/7be76731-f5e0-4079-91f7-2fafe7ce6ffd)
+
+**Changed Record** 
+![image](https://github.com/user-attachments/assets/69e309eb-d03f-4ace-a072-316df438589b)
+
+
+
+
+
+
+
