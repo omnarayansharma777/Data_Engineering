@@ -3,6 +3,14 @@ This project focuses on creating an efficient dimensional data model for the act
 By defining data structures, SQL queries, Cumulative Table Design and implementing type 2 slowly changing dimensions (SCD), 
 this project supports advanced analysis of actor performance and film history.
 
+ **What This Project Will Achieve**  
+
+✅ **Track Actor Performance** – See how actors' careers change over time.  
+✅ **Keep a History of Changes** – Record shifts in an actor’s success and activity status.  
+✅ **Easy Yearly Updates** – Add new data without affecting past records.  
+✅ **Faster Data Searches** – Quickly find insights on actors and films.  
+✅ **Ready for Reports & Analysis** – Well-structured data for charts, reports, and deeper insights.
+
 ## Data Overview 
 The actor_films dataset contains the following fields:
 
